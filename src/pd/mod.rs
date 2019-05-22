@@ -109,6 +109,11 @@ pub trait PdClient: Send + Sync {
         unimplemented!();
     }
 
+    /// Gets all stores information asynchronously.
+    fn get_all_stores_async(&self, _exclude_tombstone: bool) -> PdFuture<Vec<metapb::Store>> {
+        unimplemented!();
+    }
+
     /// Gets cluster meta information.
     fn get_cluster_config(&self) -> Result<metapb::Cluster>;
 

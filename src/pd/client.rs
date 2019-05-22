@@ -104,6 +104,49 @@ impl RpcClient {
         };
         Ok((region, leader))
     }
+
+    /// Gets given key's Region and Region's leader from PD asynchronously.
+    pub fn get_region_and_leader_async(
+        &self,
+        key: &[u8],
+    ) -> PdFuture<(metapb::Region, Option<metapb::Peer>)> {
+        let timer = Instant::now();
+
+        let key = key.to_vec();
+        let mut req = pdpb::GetRegionRequest::new();
+        req.set_header(self.header());
+        req.set_region_key(key.clone());
+
+        let executor = move |client: &RwLock<Inner>, req: pdpb::GetRegionRequest| {
+            let handler = client
+                .rl()
+                .client
+                .get_region_async_opt(&req, Self::call_option())
+                .unwrap();
+            let key = key.clone();
+            Box::new(handler.map_err(Error::Grpc).and_then(move |mut resp| {
+                PD_REQUEST_HISTOGRAM_VEC
+                    .with_label_values(&["get_region"])
+                    .observe(duration_to_sec(timer.elapsed()));
+                check_resp_header(resp.get_header())?;
+                let region = if resp.has_region() {
+                    resp.take_region()
+                } else {
+                    return Err(Error::RegionNotFound(key));
+                };
+                let leader = if resp.has_leader() {
+                    Some(resp.take_leader())
+                } else {
+                    None
+                };
+                Ok((region, leader))
+            })) as PdFuture<_>
+        };
+
+        self.leader_client
+            .request(req, executor, LEADER_CHANGE_RETRY)
+            .execute()
+    }
 }
 
 impl fmt::Debug for RpcClient {
@@ -225,6 +268,33 @@ impl PdClient for RpcClient {
         check_resp_header(resp.get_header())?;
 
         Ok(resp.take_stores().into_vec())
+    }
+
+    fn get_all_stores_async(&self, exclude_tombstone: bool) -> PdFuture<Vec<metapb::Store>> {
+        let timer = Instant::now();
+
+        let mut req = pdpb::GetAllStoresRequest::new();
+        req.set_header(self.header());
+        req.set_exclude_tombstone_stores(exclude_tombstone);
+
+        let executor = move |client: &RwLock<Inner>, req: pdpb::GetAllStoresRequest| {
+            let handler = client
+                .rl()
+                .client
+                .get_all_stores_async_opt(&req, Self::call_option())
+                .unwrap();
+            Box::new(handler.map_err(Error::Grpc).and_then(move |mut resp| {
+                PD_REQUEST_HISTOGRAM_VEC
+                    .with_label_values(&["get_all_stores"])
+                    .observe(duration_to_sec(timer.elapsed()));
+                check_resp_header(resp.get_header())?;
+                Ok(resp.take_stores().into_vec())
+            })) as PdFuture<_>
+        };
+
+        self.leader_client
+            .request(req, executor, LEADER_CHANGE_RETRY)
+            .execute()
     }
 
     fn get_cluster_config(&self) -> Result<metapb::Cluster> {
