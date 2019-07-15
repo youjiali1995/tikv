@@ -63,4 +63,15 @@ lazy_static! {
         exponential_buckets(0.0005, 2.0, 20).unwrap()
     )
     .unwrap();
+    pub static ref DETECT_DEPTH: Histogram = register_histogram!(
+        "tikv_lock_manager_detect_depth",
+        "Call depth of the `do_detect`",
+        exponential_buckets(1.0, 5.0, 20).unwrap()
+    )
+    .unwrap();
+    pub static ref DETECT_TABLE_SIZE: IntGauge = register_int_gauge!(
+        "tikv_lock_manager_detect_table_size",
+        "Size of the detect table"
+    )
+    .unwrap();
 }

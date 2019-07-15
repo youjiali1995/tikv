@@ -7,7 +7,7 @@ use super::util::extract_physical_timestamp;
 use super::waiter_manager::Scheduler as WaiterMgrScheduler;
 use super::{Error, Lock};
 use crate::pd::INVALID_ID;
-use crate::tikv_util::collections::HashMap;
+use crate::tikv_util::collections::{HashMap, HashSet};
 use crate::tikv_util::future::paired_future_callback;
 use crate::tikv_util::security::SecurityManager;
 use crate::tikv_util::worker::{FutureRunnable, FutureScheduler, Stopped};
@@ -31,29 +31,48 @@ const TXN_DETECT_INFO_TTL: u64 = 120000;
 
 #[derive(Default)]
 struct DetectTable {
-    wait_for_map: HashMap<u64, Vec<Lock>>,
+    // txn_ts => (lock_ts, Vec<lock_hash>)
+    wait_for_map: HashMap<u64, HashMap<u64, Vec<u64>>>,
 }
 
 impl DetectTable {
-    /// Return deadlock key hash if deadlocked
     pub fn detect(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) -> Option<u64> {
         let _timer = DETECTOR_HISTOGRAM_VEC.detect.start_coarse_timer();
         TASK_COUNTER_VEC.detect.inc();
 
-        if let Some(deadlock_key_hash) = self.do_detect(txn_ts, lock_ts) {
+        if self.register_if_existed(txn_ts, lock_ts, lock_hash) {
+            return None;
+        }
+
+        let mut depth = 0;
+        let mut visited = HashSet::new();
+        if let Some(deadlock_key_hash) = self.do_detect(&mut depth, &mut visited, txn_ts, lock_ts) {
+            DETECT_DEPTH.observe(depth as f64);
             return Some(deadlock_key_hash);
         }
         self.register(txn_ts, lock_ts, lock_hash);
+        DETECT_DEPTH.observe(depth as f64);
         None
     }
 
-    fn do_detect(&self, txn_ts: u64, wait_for_ts: u64) -> Option<u64> {
-        if let Some(locks) = self.wait_for_map.get(&wait_for_ts) {
-            for lock in locks {
-                if lock.ts == txn_ts {
-                    return Some(lock.hash);
+    fn do_detect(
+        &self,
+        depth: &mut u64,
+        visited: &mut HashSet<u64>,
+        txn_ts: u64,
+        wait_for_ts: u64,
+    ) -> Option<u64> {
+        *depth += 1;
+        visited.insert(wait_for_ts);
+        if let Some(wait_for) = self.wait_for_map.get(&wait_for_ts) {
+            for (lock_ts, lock_hashes) in wait_for {
+                if *lock_ts == txn_ts {
+                    return Some(lock_hashes[0]);
                 }
-                if let Some(deadlock_key_hash) = self.do_detect(txn_ts, lock.ts) {
+                if visited.contains(lock_ts) {
+                    continue;
+                }
+                if let Some(deadlock_key_hash) = self.do_detect(depth, visited, txn_ts, *lock_ts) {
                     return Some(deadlock_key_hash);
                 }
             }
@@ -61,39 +80,56 @@ impl DetectTable {
         None
     }
 
-    pub fn register(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) {
-        let locks = self.wait_for_map.entry(txn_ts).or_insert(vec![]);
-        let lock = Lock {
-            ts: lock_ts,
-            hash: lock_hash,
-        };
-        if !locks.contains(&lock) {
-            locks.push(lock);
+    fn register_if_existed(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) -> bool {
+        if let Some(wait_for) = self.wait_for_map.get_mut(&txn_ts) {
+            if let Some(lock_hashes) = wait_for.get_mut(&lock_ts) {
+                lock_hashes.push(lock_hash);
+                DETECT_TABLE_SIZE.inc();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn register(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) {
+        let wait_for = self.wait_for_map.entry(txn_ts).or_default();
+        let lock_hashes = wait_for.entry(lock_ts).or_default();
+        if !lock_hashes.contains(&lock_hash) {
+            lock_hashes.push(lock_hash);
+            DETECT_TABLE_SIZE.inc();
         }
     }
 
     pub fn clean_up_wait_for(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) {
-        if let Some(locks) = self.wait_for_map.get_mut(&txn_ts) {
-            let idx = locks
-                .iter()
-                .position(|lock| lock.ts == lock_ts && lock.hash == lock_hash);
-            if let Some(idx) = idx {
-                locks.remove(idx);
-                if locks.is_empty() {
-                    self.wait_for_map.remove(&txn_ts);
+        if let Some(wait_for) = self.wait_for_map.get_mut(&txn_ts) {
+            if let Some(lock_hashes) = wait_for.get_mut(&lock_ts) {
+                let idx = lock_hashes.iter().position(|hash| *hash == lock_hash);
+                if let Some(idx) = idx {
+                    lock_hashes.remove(idx);
+                    DETECT_TABLE_SIZE.dec();
+                    if lock_hashes.is_empty() {
+                        wait_for.remove(&txn_ts);
+                        if wait_for.is_empty() {
+                            self.wait_for_map.remove(&txn_ts);
+                        }
+                    }
                 }
             }
         }
-        TASK_COUNTER_VEC.clean_up_wait_for.inc();
     }
 
     pub fn clean_up(&mut self, txn_ts: u64) {
-        self.wait_for_map.remove(&txn_ts);
+        let len = self
+            .wait_for_map
+            .remove(&txn_ts)
+            .map_or_else(|| 0, |v| v.len());
+        DETECT_TABLE_SIZE.sub(len as i64);
         TASK_COUNTER_VEC.clean_up.inc();
     }
 
     pub fn clear(&mut self) {
         self.wait_for_map.clear();
+        DETECT_TABLE_SIZE.set(0);
     }
 
     pub fn expire<F>(&mut self, is_expired: F)
