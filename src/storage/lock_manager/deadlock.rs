@@ -52,6 +52,7 @@ impl DetectTable {
         }
         self.register(txn_ts, lock_ts, lock_hash);
         DETECT_DEPTH.observe(depth as f64);
+        DETECT_TABLE_SIZE.set(self.wait_for_map.len() as i64);
         None
     }
 
@@ -83,9 +84,10 @@ impl DetectTable {
     fn register_if_existed(&mut self, txn_ts: u64, lock_ts: u64, lock_hash: u64) -> bool {
         if let Some(wait_for) = self.wait_for_map.get_mut(&txn_ts) {
             if let Some(lock_hashes) = wait_for.get_mut(&lock_ts) {
-                lock_hashes.push(lock_hash);
-                DETECT_TABLE_SIZE.inc();
-                return true;
+                if !lock_hashes.contains(&lock_hash) {
+                    lock_hashes.push(lock_hash);
+                    return true;
+                }
             }
         }
         false
@@ -96,7 +98,6 @@ impl DetectTable {
         let lock_hashes = wait_for.entry(lock_ts).or_default();
         if !lock_hashes.contains(&lock_hash) {
             lock_hashes.push(lock_hash);
-            DETECT_TABLE_SIZE.inc();
         }
     }
 
@@ -106,7 +107,6 @@ impl DetectTable {
                 let idx = lock_hashes.iter().position(|hash| *hash == lock_hash);
                 if let Some(idx) = idx {
                     lock_hashes.remove(idx);
-                    DETECT_TABLE_SIZE.dec();
                     if lock_hashes.is_empty() {
                         wait_for.remove(&txn_ts);
                         if wait_for.is_empty() {
@@ -116,20 +116,18 @@ impl DetectTable {
                 }
             }
         }
+        DETECT_TABLE_SIZE.set(self.wait_for_map.len() as i64);
     }
 
     pub fn clean_up(&mut self, txn_ts: u64) {
-        let len = self
-            .wait_for_map
-            .remove(&txn_ts)
-            .map_or_else(|| 0, |v| v.len());
-        DETECT_TABLE_SIZE.sub(len as i64);
+        self.wait_for_map.remove(&txn_ts);
+        DETECT_TABLE_SIZE.set(self.wait_for_map.len() as i64);
         TASK_COUNTER_VEC.clean_up.inc();
     }
 
     pub fn clear(&mut self) {
         self.wait_for_map.clear();
-        DETECT_TABLE_SIZE.set(0);
+        DETECT_TABLE_SIZE.set(self.wait_for_map.len() as i64);
     }
 
     pub fn expire<F>(&mut self, is_expired: F)
@@ -137,6 +135,7 @@ impl DetectTable {
         F: Fn(u64) -> bool,
     {
         self.wait_for_map.retain(|ts, _| !is_expired(*ts));
+        DETECT_TABLE_SIZE.set(self.wait_for_map.len() as i64);
     }
 }
 
