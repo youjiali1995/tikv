@@ -2,7 +2,6 @@
 
 use super::client::Client;
 use super::metrics::*;
-use super::util::extract_physical_timestamp;
 use super::waiter_manager::Scheduler as WaiterMgrScheduler;
 use super::{Error, Lock, Result};
 use crate::pd::{RpcClient, INVALID_ID};
@@ -26,9 +25,6 @@ use std::time::{Duration, Instant};
 use tikv_util::time;
 use tokio_core::reactor::Handle;
 use tokio_timer::Interval;
-
-// 2 mins
-const TXN_DETECT_INFO_TTL: u64 = 120000;
 
 /// Used to detect the deadlock of wait-for-lock in the cluster.
 struct DetectTable {
@@ -151,15 +147,6 @@ impl DetectTable {
     pub fn clear(&mut self) {
         self.wait_for_map.clear();
     }
-
-    // TODO: remove it
-    /// Removes expired entries.
-    pub fn expire<F>(&mut self, is_expired: F)
-    where
-        F: Fn(u64) -> bool,
-    {
-        self.wait_for_map.retain(|ts, _| !is_expired(*ts));
-    }
 }
 
 #[derive(Debug)]
@@ -242,7 +229,6 @@ struct Inner {
     detect_table: Rc<RefCell<DetectTable>>,
     waiter_mgr_scheduler: WaiterMgrScheduler,
     security_mgr: Arc<SecurityManager>,
-    max_ts: u64,
 }
 
 impl Inner {
@@ -259,7 +245,6 @@ impl Inner {
             detect_table: Rc::new(RefCell::new(DetectTable::new(time::Duration::from_secs(3)))),
             waiter_mgr_scheduler,
             security_mgr,
-            max_ts: 0,
         }
     }
 
@@ -273,12 +258,6 @@ impl Inner {
 
     fn is_leader(&self) -> bool {
         self.leader_info.is_some() && self.leader_id() == self.store_id
-    }
-
-    fn update_max_ts_if_needed(&mut self, ts: u64) {
-        if ts > self.max_ts {
-            self.max_ts = ts;
-        }
     }
 
     fn reset(&mut self) {
@@ -417,36 +396,17 @@ impl<S: StoreAddrResolver + 'static> Detector<S> {
         handle.spawn(timer);
     }
 
-    // TODO: remove it
-    fn schedule_detect_table_expiration(&self, handle: &Handle) {
-        info!("schedule detect table expiration");
-        let inner = Rc::clone(&self.inner);
-        let timer = Interval::new_interval(Duration::from_millis(TXN_DETECT_INFO_TTL))
-            .for_each(move |_| {
-                let max_ts = extract_physical_timestamp(inner.borrow().max_ts);
-                inner.borrow().detect_table.borrow_mut().expire(|ts| {
-                    let ts = extract_physical_timestamp(ts);
-                    ts + TXN_DETECT_INFO_TTL <= max_ts
-                });
-                Ok(())
-            })
-            .map_err(|e| panic!("unexpected err: {:?}", e));
-        handle.spawn(timer);
-    }
-
     fn initialize(&mut self, handle: &Handle) {
         assert!(!self.is_initialized);
         // Get leader info now because tokio_timer::Interval can't execute immediately.
         let _ = Self::monitor_membership_change(&self.pd_client, &self.resolver, &self.inner);
         self.schedule_membership_change_monitor(handle);
-        self.schedule_detect_table_expiration(handle);
         self.is_initialized = true;
     }
 
     fn handle_detect(&self, handle: &Handle, tp: DetectType, txn_ts: u64, lock: Lock) {
         let mut inner = self.inner.borrow_mut();
         if inner.is_leader() {
-            inner.update_max_ts_if_needed(txn_ts);
             match tp {
                 DetectType::Detect => {
                     if let Some(deadlock_key_hash) = inner
@@ -515,7 +475,7 @@ impl<S: StoreAddrResolver + 'static> Detector<S> {
             .map_err(Error::Grpc)
             .and_then(move |mut req| {
                 // It's possible the leader changes after registering this handler.
-                let mut inner = inner.borrow_mut();
+                let inner = inner.borrow();
                 if !inner.is_leader() {
                     ERROR_COUNTER_VEC.not_leader.inc();
                     return Err(Error::Other(box_err!("leader changed")));
@@ -528,7 +488,6 @@ impl<S: StoreAddrResolver + 'static> Detector<S> {
                     ..
                 } = req.get_entry();
 
-                inner.update_max_ts_if_needed(*txn);
                 let mut detect_table = inner.detect_table.borrow_mut();
                 let res = match req.get_tp() {
                     DeadlockRequestType::Detect => {
