@@ -358,6 +358,9 @@ impl<S: Snapshot> MvccTxn<S> {
                 key: key.into_raw()?,
             });
         }
+        if let Some(value) = value.as_ref() {
+            info!("pessimistic_prewrite"; "key"=> %key, "start_ts" => self.start_ts, "value" => %Key::from_encoded_slice(value));
+        }
 
         // No need to check data constraint, it's resolved by pessimistic locks.
         self.prewrite_key_value(key, lock_type, primary.to_vec(), value, options);
@@ -418,6 +421,9 @@ impl<S: Snapshot> MvccTxn<S> {
             MVCC_DUPLICATE_CMD_COUNTER_VEC.prewrite.inc();
             return Ok(());
         }
+        if let Some(value) = value.as_ref() {
+            info!("prewrite"; "key"=> %key, "start_ts" => self.start_ts, "value" => %Key::from_encoded_slice(value));
+        }
 
         self.prewrite_key_value(key, lock_type, primary.to_vec(), value, options);
         Ok(())
@@ -474,6 +480,7 @@ impl<S: Snapshot> MvccTxn<S> {
                 };
             }
         };
+        info!("commit"; "key" => %key, "start_ts" => self.start_ts, "commit_ts" => commit_ts);
         let write = Write::new(
             WriteType::from_lock_type(lock_type).unwrap(),
             self.start_ts,

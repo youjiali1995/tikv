@@ -154,6 +154,11 @@ impl<S: Snapshot> Store for SnapshotStore<S> {
             .multi(false)
             .build()?;
         let v = point_getter.get(key)?;
+        if let Some(v) = v.as_ref() {
+            info!("get"; "key" => %key, "start_ts" => self.start_ts, "value" => %Key::from_encoded_slice(v));
+        } else {
+            info!("get"; "key" => %key, "start_ts" => self.start_ts, "value" => "none");
+        }
         statistics.add(&point_getter.take_statistics());
         Ok(v)
     }

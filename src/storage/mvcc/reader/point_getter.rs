@@ -153,6 +153,9 @@ impl<S: Snapshot> PointGetter<S> {
             }
             IsolationLevel::Rc => {}
         }
+        if ts != self.ts {
+            info!("get with new ts"; "key" => %user_key, "start_ts" => self.ts, "new_ts" => ts);
+        }
 
         self.load_data(user_key, ts)
     }
@@ -208,18 +211,18 @@ impl<S: Snapshot> PointGetter<S> {
                 return Ok(None);
             }
             // We may seek to another key. In this case, it means we cannot find the specified key.
-            {
-                let cursor_key = self.write_cursor.key(&mut self.statistics.write);
-                if !Key::is_user_key_eq(cursor_key, user_key.as_encoded().as_slice()) {
-                    return Ok(None);
-                }
+            let cursor_key = self.write_cursor.key(&mut self.statistics.write);
+            if !Key::is_user_key_eq(cursor_key, user_key.as_encoded().as_slice()) {
+                return Ok(None);
             }
 
             self.statistics.write.processed += 1;
             let write = Write::parse(self.write_cursor.value(&mut self.statistics.write))?;
+            let commit_ts = Key::decode_ts_from(cursor_key)?;
 
             match write.write_type {
                 WriteType::Put => {
+                    info!("load write"; "key" => %user_key, "ts" => ts, "write_start_ts" => write.start_ts, "write_commit_ts" => commit_ts);
                     return Ok(Some(self.load_data_by_write(write, user_key)?));
                 }
                 WriteType::Delete => {
@@ -227,6 +230,7 @@ impl<S: Snapshot> PointGetter<S> {
                 }
                 WriteType::Lock | WriteType::Rollback => {
                     // Continue iterate next `write`.
+                    info!("skip write"; "key" => %user_key, "ts" => ts, "type" => ?write.write_type, "write_start_ts" => write.start_ts, "write_commit_ts" => commit_ts);
                 }
             }
 
