@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use grpcio::{ChannelBuilder, Environment, Result, WriteFlags};
 use kvproto::import_sstpb::*;
-use kvproto::kvrpcpb::*;
+use kvproto::kvrpcpb::{Context, GetRequest, RawGetRequest};
 use kvproto::tikvpb::*;
 
 use pd_client::PdClient;

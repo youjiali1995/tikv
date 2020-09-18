@@ -115,6 +115,7 @@ make_auto_flush_static_metric! {
         scan_lock,
         resolve_lock,
         resolve_lock_lite,
+        write,
         delete_range,
         pause,
         key_mvcc,

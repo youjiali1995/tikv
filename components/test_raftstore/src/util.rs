@@ -28,7 +28,7 @@ use engine_rocks::{CompactionListener, RocksCompactionJobInfo};
 use engine_rocks::{Compat, RocksEngine, RocksSnapshot};
 use engine_traits::{Engines, Iterable, Peekable};
 use raftstore::store::fsm::RaftRouter;
-use raftstore::store::*;
+use raftstore::store::{WriteResponse as raftWriteResponse, *};
 use raftstore::Result;
 use tikv::config::*;
 use tikv_util::config::*;
@@ -356,7 +356,7 @@ pub fn make_cb(cmd: &RaftCmdRequest) -> (Callback<RocksSnapshot>, mpsc::Receiver
             let _ = tx.send(resp.response);
         }))
     } else {
-        Callback::Write(Box::new(move |resp: WriteResponse| {
+        Callback::Write(Box::new(move |resp: raftWriteResponse| {
             // we don't care error actually.
             let _ = tx.send(resp.response);
         }))

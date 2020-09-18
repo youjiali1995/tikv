@@ -241,6 +241,7 @@ impl<T: RaftStoreRouter<RocksEngine> + 'static, E: Engine, L: LockManager> Tikv
         DeleteRangeRequest,
         DeleteRangeResponse
     );
+    handle_request!(kv_write, future_write, WriteRequest, WriteResponse);
     handle_request!(
         mvcc_get_by_key,
         future_mvcc_get_by_key,
@@ -1085,6 +1086,7 @@ fn handle_batch_commands_request<E: Engine, L: LockManager>(
         ResolveLock, future_resolve_lock(storage), kv_resolve_lock;
         Gc, future_gc(), kv_gc;
         DeleteRange, future_delete_range(storage), kv_delete_range;
+        Write, future_write(storage), kv_write;
         RawBatchGet, future_raw_batch_get(storage), raw_batch_get;
         RawPut, future_raw_put(storage), raw_put;
         RawBatchPut, future_raw_batch_put(storage), raw_batch_put;
@@ -1198,6 +1200,32 @@ fn future_batch_get<E: Engine, L: LockManager>(
             resp.set_region_error(err);
         } else {
             resp.set_pairs(extract_kv_pairs(v).into());
+        }
+        Ok(resp)
+    }
+}
+
+fn future_write<E: Engine, L: LockManager>(
+    storage: &Storage<E, L>,
+    mut req: WriteRequest,
+) -> impl Future<Output = ServerResult<WriteResponse>> {
+    let (cb, f) = paired_future_callback();
+    let res = storage.write(
+        req.take_context(),
+        req.take_mutations().into_iter().map(Into::into).collect(),
+        req.get_version().into(),
+        cb,
+    );
+    async move {
+        let v = match res {
+            Err(e) => Err(e),
+            Ok(_) => f.await?,
+        };
+        let mut resp = WriteResponse::default();
+        if let Some(err) = extract_region_error(&v) {
+            resp.set_region_error(err);
+        } else if let Err(e) = v {
+            resp.set_error(format!("{}", e));
         }
         Ok(resp)
     }
