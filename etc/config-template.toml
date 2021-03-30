@@ -36,7 +36,7 @@
 # log-rotation-size = "300MB"
 
 ## Enable io snoop which utilize eBPF to get accurate disk io of TiKV
-## It won't take effect when compiling without BCC_IOSNOOP=1. 
+## It won't take effect when compiling without BCC_IOSNOOP=1.
 # enable-io-snoop = true
 
 # Configurations for the single thread pool serving read requests.
@@ -110,7 +110,7 @@
 # advertise-addr = ""
 
 ## Status address.
-## This is used for reporting the status of TiKV directly through 
+## This is used for reporting the status of TiKV directly through
 ## the HTTP address. Notice that there is a risk of leaking status
 ## information if this port is exposed to the public.
 ## Empty string means disabling it.
@@ -884,7 +884,7 @@
 ##     Plaintext as master key means no master key is given and only applicable when
 ##     encryption is not enabled, i.e. data-encryption-method = "plaintext". This type doesn't
 ##     have sub-config items. Example:
-##     
+##
 ##     [security.encryption.master-key]
 ##     type = "plaintext"
 ##
@@ -908,7 +908,7 @@
 ##
 ##     Supply a custom encryption key stored in a file. It is recommended NOT to use in production,
 ##     as it breaks the purpose of encryption at rest, unless the file is stored in tempfs.
-##     The file must contain a 256-bits (32 bytes, regardless of key length implied by 
+##     The file must contain a 256-bits (32 bytes, regardless of key length implied by
 ##     data-encryption-method) key encoded as hex string and end with newline ("\n"). Example:
 ##
 ##     [security.encryption.master-key]
@@ -945,9 +945,6 @@
 # sst-max-size = "144MB"
 
 [pessimistic-txn]
-## Enable pessimistic transaction
-# enabled = true
-
 ## The default and maximum delay before responding to TiDB when pessimistic
 ## transactions encounter locks
 # wait-for-lock-timeout = "1s"
